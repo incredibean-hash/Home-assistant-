@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.23
+- Diagnostic build based on the known-good 1.0.21 frame rate and JPEG quality
+- Added per-frame timestamps and X-MIPC-Frame-Age-Ms response data to distinguish decoder stalls from browser stalls
+- Kept the purpose-built latest-frame engine and 100 ms browser refresh baseline
+
 ## 1.0.22
 - Preserved the working 1.0.21 latest-frame architecture
 - Increased browser frame refresh from 10 to 20 requests per second for faster visible response
