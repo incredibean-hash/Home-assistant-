@@ -132,7 +132,13 @@ def ensure_vlc(index, force=False):
             "--sout", f"#transcode{{vcodec=MJPG,vb=0,scale=1}}:standard{{access=http,mux=mpjpeg,dst=127.0.0.1:{port}/live.mjpg}}",
             "--sout-keep"
         ]
-        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, bufsize=1)
+        def demote_vlc():
+            import pwd
+            u = pwd.getpwnam("vlcuser")
+            os.setgid(u.pw_gid)
+            os.setuid(u.pw_uid)
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, bufsize=1,
+                             preexec_fn=demote_vlc)
         vlc_procs[index] = p
         diag(f"[camera {index + 1}] VLC process launched on local port {port}")
         def read_vlc_errors():
