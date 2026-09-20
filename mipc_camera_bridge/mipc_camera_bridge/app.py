@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import threading
+import socket
 import time
 from flask import Flask, Response, jsonify
 
@@ -80,10 +81,17 @@ def mjpeg(index):
         try:
             diag(f"[camera {index + 1}] Live video attempt {attempt + 1} starting")
             url = fresh_stream(index, force=(attempt > 0))
-            diag(f"[camera {index + 1}] Starting FFmpeg decoder")
+            diag(f"[camera {index + 1}] Testing TCP connection to {camera(index).get('host')}:7010")
+            try:
+                with socket.create_connection((str(camera(index).get("host")), 7010), timeout=5):
+                    diag(f"[camera {index + 1}] TCP port 7010 reachable from Home Assistant")
+            except Exception as tcp_error:
+                diag(f"[camera {index + 1}] TCP port 7010 FAILED from Home Assistant: {type(tcp_error).__name__}: {tcp_error}")
+                raise
+            diag(f"[camera {index + 1}] Starting FFmpeg decoder with RTMP debug")
             proc = subprocess.Popen(
-                ["ffmpeg","-hide_banner","-loglevel","error",
-                 "-i",url,"-an","-vf","fps=8,scale='min(1280,iw)':-2",
+                ["ffmpeg","-hide_banner","-loglevel","verbose",
+                 "-rw_timeout","10000000","-i",url,"-an","-vf","fps=5",
                  "-q:v","5","-f","mjpeg","pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
@@ -108,7 +116,8 @@ def mjpeg(index):
             if rc == 0:
                 return
             err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
-            diag(f"[camera {index + 1}] FFmpeg exited {rc}: {err or 'no error text'}")
+            safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+            diag(f"[camera {index + 1}] FFmpeg exited {rc}: {safe_err[-2500:] or 'no error text'}")
         except GeneratorExit:
             return
         except Exception as e:
