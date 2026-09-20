@@ -1,5 +1,5 @@
 name: "MIPC Camera Bridge"
-version: "1.0.21"
+version: "1.0.22"
 slug: "mipc_camera_bridge"
 description: "Purpose-built low-latency MIPC camera bridge with local PTZ"
 url: "https://github.com/incredibean-hash/Home-assistant-"
