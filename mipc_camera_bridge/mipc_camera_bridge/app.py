@@ -23,6 +23,7 @@ vlc_lock = threading.Lock()
 latest_lock = threading.Lock()
 latest_frames = {}
 latest_seq = {}
+latest_frame_time = {}
 engine_threads = {}
 
 def diag(message):
@@ -193,7 +194,7 @@ def latest_frame_engine(index):
                 ["ffmpeg", "-hide_banner", "-loglevel", "warning",
                  "-fflags", "nobuffer", "-flags", "low_delay",
                  "-probesize", "32768", "-analyzeduration", "0",
-                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "5",
+                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "4",
                  "-f", "mjpeg", "pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
@@ -219,6 +220,7 @@ def latest_frame_engine(index):
                     with latest_lock:
                         latest_frames[index] = frame
                         latest_seq[index] = latest_seq.get(index, 0) + 1
+                        latest_frame_time[index] = time.monotonic()
                     if first:
                         first = False
                         diag(f"[camera {index + 1}] Latest-frame engine received first frame")
@@ -381,7 +383,7 @@ def home():
       if(liveTimers[i]) clearInterval(liveTimers[i]);
       const tick=()=>{ v.src='camera/'+i+'/frame.jpg?t='+Date.now(); };
       tick();
-      liveTimers[i]=setInterval(tick,50);
+      liveTimers[i]=setInterval(tick,100);
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
     window.addEventListener('load',()=>{document.querySelectorAll('img[id^="cam-"]').forEach(el=>startLive(parseInt(el.id.split('-')[1])))})
@@ -396,11 +398,14 @@ def latest_frame_jpeg(index):
         with latest_lock:
             frame = latest_frames.get(index)
             seq = latest_seq.get(index, 0)
+            stamp = latest_frame_time.get(index)
         if frame:
+            age_ms = int((time.monotonic() - stamp) * 1000) if stamp else -1
             return Response(frame, content_type="image/jpeg",
                             headers={"Cache-Control":"no-store, no-cache, must-revalidate, max-age=0",
                                      "Pragma":"no-cache",
-                                     "X-MIPC-Frame":str(seq)})
+                                     "X-MIPC-Frame":str(seq),
+                                     "X-MIPC-Frame-Age-Ms":str(age_ms)})
         time.sleep(0.02)
     return Response(status=503)
 
