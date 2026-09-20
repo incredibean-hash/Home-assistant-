@@ -17,6 +17,7 @@ diag_lock = threading.Lock()
 diag_lines = []
 go2rtc_lock = threading.Lock()
 go2rtc_ready = {}
+monitor_started = False
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -80,6 +81,35 @@ def ensure_go2rtc(index, force=False):
         go2rtc_ready[index] = time.time()
         diag(f"[camera {index + 1}] go2rtc stream ready")
         return name
+
+def go2rtc_has_stream(index):
+    name = f"camera{index + 1}"
+    try:
+        r = requests.get("http://127.0.0.1:1984/api/streams", params={"src": name}, timeout=3)
+        return r.ok and name in r.text
+    except Exception:
+        return False
+
+def camera_monitor():
+    # Keep every configured camera authenticated and registered with go2rtc.
+    time.sleep(2)
+    while True:
+        for index, _ in enumerate(cameras()):
+            try:
+                if not go2rtc_has_stream(index):
+                    with go2rtc_lock:
+                        go2rtc_ready.pop(index, None)
+                    ensure_go2rtc(index, force=True)
+            except Exception as e:
+                diag(f"[camera {index + 1}] Background reconnect failed: {type(e).__name__}: {e}")
+        time.sleep(5)
+
+def start_monitor():
+    global monitor_started
+    if monitor_started:
+        return
+    monitor_started = True
+    threading.Thread(target=camera_monitor, daemon=True).start()
 
 def ptz(c, direction):
     step = int(c.get("ptz_step", 20))
@@ -284,4 +314,5 @@ def health():
     return jsonify(ok=True,cameras=len(cameras()))
 
 if __name__=="__main__":
+    start_monitor()
     app.run(host="0.0.0.0",port=8099,threaded=True)
