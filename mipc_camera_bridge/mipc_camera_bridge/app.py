@@ -453,7 +453,10 @@ def home():
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
-    async function toggleAutoPan(i){const b=document.getElementById('pan-'+i),s=document.getElementById('status-'+i);const running=b.dataset.running==='1';\n      try{const r=await fetch('api/camera/'+i+'/autopan/'+(running?'stop':'start'),{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error||'Auto Pan failed');b.dataset.running=running?'0':'1';b.textContent=running?'Start Auto Pan':'Stop Auto Pan';s.textContent=running?'Auto Pan stopped':'Auto Pan running slowly';}\n      catch(e){s.textContent=e.toString()}}\n    const liveTimers={};
+    async function toggleAutoPan(i){const b=document.getElementById('pan-'+i),st=document.getElementById('status-'+i);const running=b.dataset.running==='1';
+      try{const r=await fetch('api/camera/'+i+'/autopan/'+(running?'stop':'start'),{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error||'Auto Pan failed');b.dataset.running=running?'0':'1';b.textContent=running?'Start Auto Pan':'Stop Auto Pan';st.textContent=running?'Auto Pan stopped':'Auto Pan running slowly';}
+      catch(e){st.textContent=e.toString()}}
+    const liveTimers={};
     function startLive(i){
       const v=document.getElementById('cam-'+i);
       if(liveTimers[i]) clearInterval(liveTimers[i]);
