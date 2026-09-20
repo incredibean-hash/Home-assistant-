@@ -193,7 +193,7 @@ def latest_frame_engine(index):
                 ["ffmpeg", "-hide_banner", "-loglevel", "warning",
                  "-fflags", "nobuffer", "-flags", "low_delay",
                  "-probesize", "32768", "-analyzeduration", "0",
-                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "4",
+                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "5",
                  "-f", "mjpeg", "pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
@@ -381,7 +381,7 @@ def home():
       if(liveTimers[i]) clearInterval(liveTimers[i]);
       const tick=()=>{ v.src='camera/'+i+'/frame.jpg?t='+Date.now(); };
       tick();
-      liveTimers[i]=setInterval(tick,100);
+      liveTimers[i]=setInterval(tick,50);
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
     window.addEventListener('load',()=>{document.querySelectorAll('img[id^="cam-"]').forEach(el=>startLive(parseInt(el.id.split('-')[1])))})
@@ -523,7 +523,16 @@ def snapshot(index):
 @app.post("/api/camera/<int:index>/ptz/<direction>")
 def move(index,direction):
     try:
-        ptz(camera(index),direction)
+        c = camera(index)
+        started = time.perf_counter()
+        def worker():
+            try:
+                ptz(c, direction)
+                ms = int((time.perf_counter() - started) * 1000)
+                diag(f"[camera {index + 1}] PTZ {direction} completed in {ms} ms")
+            except Exception as e:
+                diag(f"[camera {index + 1}] PTZ {direction} error: {type(e).__name__}: {e}")
+        threading.Thread(target=worker, daemon=True).start()
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False,error=str(e)),500
