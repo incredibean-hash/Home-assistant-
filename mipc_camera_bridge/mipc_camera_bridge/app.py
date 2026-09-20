@@ -117,7 +117,7 @@ def mjpeg(index):
                     except Exception: pass
                     time.sleep(0.2)
                     err = "".join(stderr_chunks).strip()
-                    safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+                    safe_err = re.sub(r"rtmp://[^\s]+", "rtmp://[redacted]", err)
                     diag(f"[camera {index + 1}] FFmpeg timeout detail: {safe_err[-2500:] or 'no FFmpeg error text'}")
                     break
                 ready, _, _ = select.select([proc.stdout], [], [], 0.5)
@@ -130,11 +130,11 @@ def mjpeg(index):
                     break
                 buf.extend(chunk)
                 while True:
-                    frame_start = buf.find(b"\\xff\\xd8")
+                    frame_start = buf.find(bytes([0xff, 0xd8]))
                     if frame_start < 0:
                         if len(buf) > 1048576: buf.clear()
                         break
-                    frame_end = buf.find(b"\\xff\\xd9", frame_start + 2)
+                    frame_end = buf.find(bytes([0xff, 0xd9]), frame_start + 2)
                     if frame_end < 0:
                         if frame_start: del buf[:frame_start]
                         break
@@ -143,12 +143,12 @@ def mjpeg(index):
                     if not got_frame:
                         got_frame = True
                         diag(f"[camera {index + 1}] First video frame received")
-                    yield b"--frame\\r\\nContent-Type: image/jpeg\\r\\nContent-Length: " + str(len(frame)).encode() + b"\\r\\n\\r\\n" + frame + b"\\r\\n"
+                    yield b"--frame" + bytes([13,10]) + b"Content-Type: image/jpeg" + bytes([13,10]) + b"Content-Length: " + str(len(frame)).encode() + bytes([13,10,13,10]) + frame + bytes([13,10])
             if got_frame:
                 return
             if proc and proc.poll() is not None:
                 err = "".join(stderr_chunks).strip()
-                safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+                safe_err = re.sub(r"rtmp://[^\s]+", "rtmp://[redacted]", err)
                 diag(f"[camera {index + 1}] FFmpeg exited {proc.returncode}: {safe_err[-2500:] or 'no error text'}")
         except GeneratorExit:
             return
