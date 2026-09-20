@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.25
+- Adds Start/Stop Auto Pan to each camera
+- Auto Pan uses small repeated PTZ steps so lowering PTZ Step produces a slower, clearer patrol
+- Keeps Auto Pan behind the existing one-command-at-a-time PTZ safety gate
+- Reverses patrol direction after a bounded sweep instead of queueing movement commands
+- Stops cleanly without interrupting the live camera stream
+
 ## 1.0.24
 - Safety/stability build after the 1.0.23 host-network lockup
 - Limits each camera to one PTZ command at a time and drops extra commands instead of queueing them
