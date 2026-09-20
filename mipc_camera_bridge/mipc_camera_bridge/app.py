@@ -67,7 +67,7 @@ def mjpeg(index):
                 ["ffmpeg","-hide_banner","-loglevel","error",
                  "-i",url,"-an","-vf","fps=8,scale='min(1280,iw)':-2",
                  "-q:v","5","-f","mjpeg","pipe:1"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
             buf = bytearray()
             while True:
@@ -86,12 +86,15 @@ def mjpeg(index):
                     frame = bytes(buf[start:end+2])
                     del buf[:end+2]
                     yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-            if proc.wait(timeout=3) == 0:
+            rc = proc.wait(timeout=3)
+            if rc == 0:
                 return
+            err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
+            print(f"[camera {index}] ffmpeg exited {rc}: {err}", flush=True)
         except GeneratorExit:
             return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[camera {index}] live stream error on attempt {attempt + 1}: {type(e).__name__}: {e}", flush=True)
         finally:
             if proc and proc.poll() is None:
                 proc.terminate()
