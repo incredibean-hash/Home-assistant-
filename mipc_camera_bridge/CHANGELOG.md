@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.22
+- Preserved the working 1.0.21 latest-frame architecture
+- Increased browser frame refresh from 10 to 20 requests per second for faster visible response
+- Reduced JPEG encoding work slightly to help frames reach the cache sooner
+- PTZ commands now run independently from the browser response
+- Added PTZ command timing diagnostics in milliseconds for latency tuning
+
 ## 1.0.21
 - Kept the working purpose-built latest-frame camera engine unchanged
 - Replaced long-lived MJPEG browser transport with ingress-safe finite JPEG frame delivery
