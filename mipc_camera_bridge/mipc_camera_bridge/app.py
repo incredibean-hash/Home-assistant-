@@ -30,6 +30,32 @@ auto_pan_lock = threading.Lock()
 auto_pan_stop = {}
 auto_pan_threads = {}
 auto_pan_direction = {}
+patrol_lock = threading.Lock()
+patrol_position = {}
+PATROL_LIMITS_FILE = "/data/mipc_patrol_limits.json"
+
+def load_patrol_limits():
+    try:
+        with open(PATROL_LIMITS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except Exception:
+        return {}
+
+patrol_limits = load_patrol_limits()
+
+def save_patrol_limits():
+    try:
+        with open(PATROL_LIMITS_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in patrol_limits.items()}, f)
+    except Exception as e:
+        diag(f"Could not save patrol limits: {type(e).__name__}: {e}")
+
+def note_horizontal_move(index, direction):
+    with patrol_lock:
+        if index not in patrol_position:
+            return
+        patrol_position[index] += 1 if direction == "right" else -1
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -275,18 +301,35 @@ def ptz(c, direction):
     raise ValueError("Unknown PTZ direction")
 
 def auto_pan_worker(index, stop_event):
-    """Slow, bounded patrol using the same one-command-at-a-time PTZ gate."""
+    """Slow patrol using trained limits when available, otherwise the safe bounded sweep."""
     direction = auto_pan_direction.get(index, "right")
     steps_this_way = 0
     max_steps = 24
-    diag(f"[camera {index + 1}] Auto Pan started")
+    with patrol_lock:
+        limits = dict(patrol_limits.get(index, {}))
+        pos = patrol_position.get(index)
+    trained = "left" in limits and "right" in limits and limits["right"] > limits["left"] and pos is not None
+    diag(f"[camera {index + 1}] Auto Pan started" + (" with trained limits" if trained else " with default bounded sweep"))
     try:
         while not stop_event.is_set():
+            with patrol_lock:
+                limits = dict(patrol_limits.get(index, {}))
+                pos = patrol_position.get(index)
+            trained = "left" in limits and "right" in limits and limits["right"] > limits["left"] and pos is not None
+            if trained:
+                if pos >= limits["right"]:
+                    direction = "left"
+                elif pos <= limits["left"]:
+                    direction = "right"
+                auto_pan_direction[index] = direction
             c = camera(index)
             lock = ptz_locks.setdefault(index, threading.Lock())
+            moved = False
             if lock.acquire(blocking=False):
                 try:
                     ptz(c, direction)
+                    note_horizontal_move(index, direction)
+                    moved = True
                     steps_this_way += 1
                 except Exception as e:
                     diag(f"[camera {index + 1}] Auto Pan {direction} error: {type(e).__name__}: {e}")
@@ -294,7 +337,10 @@ def auto_pan_worker(index, stop_event):
                         break
                 finally:
                     lock.release()
-            if steps_this_way >= max_steps:
+            if trained:
+                if stop_event.wait(0.30):
+                    break
+            elif moved and steps_this_way >= max_steps:
                 direction = "left" if direction == "right" else "right"
                 auto_pan_direction[index] = direction
                 steps_this_way = 0
@@ -431,7 +477,7 @@ def home():
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
             <span></span><button onclick="move({i},'down')">▼</button><span></span>
           </div>
-          <div class="row">\n            <button id="pan-{i}" onclick="toggleAutoPan({i})">Start Auto Pan</button>\n            <button onclick="reloadVideo({i})">Refresh Live</button>
+          <div class="row">\n            <button id="pan-{i}" onclick="toggleAutoPan({i})">Start Auto Pan</button>\n            <button onclick="setLimit({i},'left')">Set Left Limit</button>\n            <button onclick="setLimit({i},'right')">Set Right Limit</button>\n            <button onclick="reloadVideo({i})">Refresh Live</button>
             <a class="button" href="camera/{i}/snapshot" target="_blank">Snapshot</a>
           </div>
           <div id="status-{i}" class="status">Low-latency latest-frame live view</div>
@@ -456,6 +502,7 @@ def home():
     async function toggleAutoPan(i){const b=document.getElementById('pan-'+i),st=document.getElementById('status-'+i);const running=b.dataset.running==='1';
       try{const r=await fetch('api/camera/'+i+'/autopan/'+(running?'stop':'start'),{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error||'Auto Pan failed');b.dataset.running=running?'0':'1';b.textContent=running?'Start Auto Pan':'Stop Auto Pan';st.textContent=running?'Auto Pan stopped':'Auto Pan running slowly';}
       catch(e){st.textContent=e.toString()}}
+    async function setLimit(i,side){const st=document.getElementById('status-'+i);try{const r=await fetch('api/camera/'+i+'/limit/'+side,{method:'POST'});const j=await r.json();st.textContent=j.ok?j.message:(j.error||'Could not set limit')}catch(e){st.textContent=e.toString()}}
     const liveTimers={};
     function startLive(i){
       const v=document.getElementById('cam-'+i);
@@ -618,6 +665,32 @@ def auto_pan_api(index, action):
     except Exception as e:
         return jsonify(ok=False,error=str(e)),500
 
+@app.post("/api/camera/<int:index>/limit/<side>")
+def set_patrol_limit(index, side):
+    try:
+        camera(index)
+        if side not in ("left", "right"):
+            return jsonify(ok=False,error="Unknown limit"),400
+        stop_auto_pan(index)
+        with patrol_lock:
+            if side == "left":
+                patrol_position[index] = 0
+                patrol_limits[index] = {"left": 0}
+                message = "Left limit saved. Move to the right edge, then press Set Right Limit."
+            else:
+                if index not in patrol_position or patrol_limits.get(index, {}).get("left") is None:
+                    return jsonify(ok=False,error="Set Left Limit first"),400
+                pos = patrol_position[index]
+                if pos <= patrol_limits[index]["left"]:
+                    return jsonify(ok=False,error="Move right from the left limit before setting the right limit"),400
+                patrol_limits[index]["right"] = pos
+                message = f"Right limit saved. Patrol span: {pos - patrol_limits[index]['left']} steps."
+            save_patrol_limits()
+        diag(f"[camera {index + 1}] {side.title()} patrol limit trained")
+        return jsonify(ok=True,message=message)
+    except Exception as e:
+        return jsonify(ok=False,error=str(e)),500
+
 @app.post("/api/camera/<int:index>/ptz/<direction>")
 def move(index,direction):
     try:
@@ -629,6 +702,8 @@ def move(index,direction):
         def worker():
             try:
                 ptz(c, direction)
+                if direction in ("left", "right"):
+                    note_horizontal_move(index, direction)
                 ms = int((time.perf_counter() - started) * 1000)
                 diag(f"[camera {index + 1}] PTZ {direction} completed in {ms} ms")
             except Exception as e:
