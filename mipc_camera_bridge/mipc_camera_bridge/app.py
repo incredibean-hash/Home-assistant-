@@ -107,11 +107,9 @@ def camera_monitor():
         time.sleep(5)
 
 def start_monitor():
-    global monitor_started
-    if monitor_started:
-        return
-    monitor_started = True
-    threading.Thread(target=camera_monitor, daemon=True).start()
+    # Legacy go2rtc monitor intentionally disabled while VLC owns the camera session.
+    diag("go2rtc background monitor disabled; VLC owns live MIPC sessions")
+    return
 
 def ensure_vlc(index, force=False):
     # VLC owns the MIPC RTMP input. It emits a deliberately low-buffer MJPEG
@@ -134,9 +132,28 @@ def ensure_vlc(index, force=False):
             "--sout", f"#transcode{{vcodec=MJPG,vb=0,scale=1}}:standard{{access=http,mux=mpjpeg,dst=127.0.0.1:{port}/live.mjpg}}",
             "--sout-keep"
         ]
-        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, bufsize=1)
         vlc_procs[index] = p
-        diag(f"[camera {index + 1}] VLC low-latency engine started on local port {port}")
+        diag(f"[camera {index + 1}] VLC process launched on local port {port}")
+        def read_vlc_errors():
+            tail = []
+            try:
+                for line in p.stderr:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    safe = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", line)
+                    tail.append(safe)
+                    tail[:] = tail[-8:]
+                rc = p.wait()
+                diag(f"[camera {index + 1}] VLC exited with code {rc}: " + " | ".join(tail[-4:]))
+            except Exception as e:
+                diag(f"[camera {index + 1}] VLC stderr reader error: {type(e).__name__}: {e}")
+        threading.Thread(target=read_vlc_errors, daemon=True).start()
+        time.sleep(0.35)
+        if p.poll() is not None:
+            raise RuntimeError(f"VLC exited immediately with code {p.returncode}; see diagnostics")
+        diag(f"[camera {index + 1}] VLC low-latency engine is running")
         return port
 
 def vlc_monitor():
@@ -149,7 +166,7 @@ def vlc_monitor():
                     ensure_vlc(index, force=True)
             except Exception as e:
                 diag(f"[camera {index + 1}] VLC background reconnect failed: {type(e).__name__}: {e}")
-        time.sleep(3)
+        time.sleep(8)
 
 def start_vlc_monitor():
     threading.Thread(target=vlc_monitor, daemon=True).start()
