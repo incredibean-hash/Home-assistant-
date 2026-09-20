@@ -10,6 +10,19 @@ app = Flask(__name__)
 CLI = "/opt/venv/bin/mipc_camera_client"
 stream_cache = {}
 cache_lock = threading.Lock()
+diag_lock = threading.Lock()
+diag_lines = []
+
+def diag(message):
+    line = time.strftime("%H:%M:%S") + "  " + str(message)
+    with diag_lock:
+        diag_lines.append(line)
+        del diag_lines[:-40]
+    print(line, flush=True)
+
+def diag_text():
+    with diag_lock:
+        return "\n".join(diag_lines[-40:]) or "No diagnostics yet. Refresh the video to run a test."
 
 def cameras():
     with open("/data/options.json", "r", encoding="utf-8") as f:
@@ -36,11 +49,14 @@ def fresh_stream(index, force=False):
         old = stream_cache.get(index)
         if old and not force and now-old[1] < 240:
             return old[0]
-    out = mipc(camera(index), "stream")
+    c = camera(index)
+    diag(f"[camera {index + 1}] Requesting local stream from {c.get('host', '?')}")
+    out = mipc(c, "stream")
     urls = re.findall(r"rtmp://[^\s]+", out)
     if not urls:
         raise RuntimeError("Camera did not return a local RTMP stream URL")
     url = urls[-1]
+    diag(f"[camera {index + 1}] MIPC returned an RTMP stream URL")
     with cache_lock:
         stream_cache[index] = (url, now)
     return url
@@ -62,7 +78,9 @@ def mjpeg(index):
     for attempt in range(2):
         proc = None
         try:
+            diag(f"[camera {index + 1}] Live video attempt {attempt + 1} starting")
             url = fresh_stream(index, force=(attempt > 0))
+            diag(f"[camera {index + 1}] Starting FFmpeg decoder")
             proc = subprocess.Popen(
                 ["ffmpeg","-hide_banner","-loglevel","error",
                  "-i",url,"-an","-vf","fps=8,scale='min(1280,iw)':-2",
@@ -90,11 +108,11 @@ def mjpeg(index):
             if rc == 0:
                 return
             err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
-            print(f"[camera {index}] ffmpeg exited {rc}: {err}", flush=True)
+            diag(f"[camera {index + 1}] FFmpeg exited {rc}: {err or 'no error text'}")
         except GeneratorExit:
             return
         except Exception as e:
-            print(f"[camera {index}] live stream error on attempt {attempt + 1}: {type(e).__name__}: {e}", flush=True)
+            diag(f"[camera {index + 1}] Live stream error on attempt {attempt + 1}: {type(e).__name__}: {e}")
         finally:
             if proc and proc.poll() is None:
                 proc.terminate()
@@ -130,7 +148,11 @@ def home():
     button,.button{border:0;border-radius:12px;min-height:48px;padding:10px 14px;background:#374151;color:#fff;font-size:16px;text-decoration:none;display:flex;align-items:center;justify-content:center}
     .ptz button{font-size:22px}.home{font-size:18px!important}.row{display:flex;gap:8px;flex-wrap:wrap}.status{color:#9ca3af;font-size:13px;margin-top:10px}
     </style></head><body><h1>MIPC Camera Bridge</h1>"""+"".join(cards)+r"""
+    <section class="card"><h2>Diagnostics</h2><p class="status">Updates automatically when the bridge tests the camera. Passwords and stream tokens are not shown.</p><pre id="diag" style="white-space:pre-wrap;word-break:break-word;background:#111827;padding:12px;border-radius:12px;max-height:300px;overflow:auto">Loading...</pre><div class="row"><button onclick="copyDiag()">Copy Diagnostics</button><button onclick="loadDiag()">Refresh Diagnostics</button></div></section>
     <script>
+    async function loadDiag(){try{const r=await fetch('api/diagnostics?t='+Date.now());document.getElementById('diag').textContent=await r.text()}catch(e){document.getElementById('diag').textContent=e.toString()}}
+    async function copyDiag(){await loadDiag();try{await navigator.clipboard.writeText(document.getElementById('diag').textContent)}catch(e){}}
+    setInterval(loadDiag,3000);loadDiag();
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
@@ -160,6 +182,10 @@ def move(index,direction):
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False,error=str(e)),500
+
+@app.get("/api/diagnostics")
+def diagnostics():
+    return Response(diag_text(), mimetype="text/plain", headers={"Cache-Control":"no-store"})
 
 @app.get("/health")
 def health():
