@@ -129,7 +129,7 @@ def ensure_vlc(index, force=False):
             "cvlc", "-I", "dummy", "--no-audio", "--network-caching=100",
             "--live-caching=100", "--drop-late-frames", "--skip-frames",
             url,
-            "--sout", f"#transcode{{vcodec=MJPG,vb=0,scale=1}}:standard{{access=http,mux=mpjpeg,dst=127.0.0.1:{port}/live.mjpg}}",
+            "--sout", f"#transcode{{vcodec=MJPG,vb=0,scale=1}}:standard{{access=http,mux=raw,dst=127.0.0.1:{port}/live.mjpg}}",
             "--sout-keep"
         ]
         def demote_vlc():
@@ -337,14 +337,33 @@ def vlc_live(index):
             time.sleep(0.15)
         if not upstream or not upstream.ok:
             raise RuntimeError(f"VLC output not ready: {last_error}")
-        diag(f"[camera {index + 1}] Browser attached to VLC live stream")
-        def chunks():
+        diag(f"[camera {index + 1}] Browser attached to VLC raw JPEG stream")
+        def frames():
+            buf = bytearray()
+            first = True
             try:
-                for chunk in upstream.iter_content(chunk_size=32768):
-                    if chunk: yield chunk
+                for chunk in upstream.iter_content(chunk_size=16384):
+                    if not chunk:
+                        continue
+                    buf.extend(chunk)
+                    while True:
+                        a = buf.find(bytes([0xff, 0xd8]))
+                        if a < 0:
+                            if len(buf) > 2097152: buf.clear()
+                            break
+                        b = buf.find(bytes([0xff, 0xd9]), a + 2)
+                        if b < 0:
+                            if a: del buf[:a]
+                            break
+                        jpg = bytes(buf[a:b + 2])
+                        del buf[:b + 2]
+                        if first:
+                            first = False
+                            diag(f"[camera {index + 1}] First VLC JPEG frame delivered to browser")
+                        yield b"--frame\\r\\nContent-Type: image/jpeg\\r\\n\\r\\n" + jpg + b"\\r\\n"
             finally:
                 upstream.close()
-        return Response(chunks(), mimetype="multipart/x-mixed-replace; boundary=--7b3cc56e5f51db803f790dad720ed50a",
+        return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame",
                         headers={"Cache-Control":"no-store, no-cache, must-revalidate","X-Accel-Buffering":"no"})
     except Exception as e:
         diag(f"[camera {index + 1}] VLC live error: {type(e).__name__}: {e}")
