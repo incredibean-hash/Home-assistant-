@@ -25,6 +25,7 @@ latest_frames = {}
 latest_seq = {}
 latest_frame_time = {}
 engine_threads = {}
+ptz_locks = {}
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -183,7 +184,7 @@ def start_vlc_monitor():
     threading.Thread(target=vlc_monitor, daemon=True).start()
 
 def latest_frame_engine(index):
-    """One camera connection, newest frame wins: stale decoded frames are discarded."""
+    """One bounded camera connection. Newest frame wins; stale decoders self-restart."""
     backoff = 1
     while True:
         proc = None
@@ -191,29 +192,43 @@ def latest_frame_engine(index):
             url = fresh_stream(index, force=True)
             diag(f"[camera {index + 1}] Latest-frame engine opening one MIPC RTMP session")
             proc = subprocess.Popen(
-                ["ffmpeg", "-hide_banner", "-loglevel", "warning",
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
                  "-fflags", "nobuffer", "-flags", "low_delay",
                  "-probesize", "32768", "-analyzeduration", "0",
                  "-i", url, "-an", "-vf", "fps=30", "-q:v", "4",
                  "-f", "mjpeg", "pipe:1"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
             )
             buf = bytearray()
             first = True
+            started = time.monotonic()
+            last_data = started
             backoff = 1
             while proc.poll() is None:
+                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+                now = time.monotonic()
+                if not ready:
+                    limit = 15.0 if first else 3.0
+                    if now - last_data > limit:
+                        diag(f"[camera {index + 1}] Decoder stale for {now-last_data:.1f}s; restarting only camera decoder")
+                        proc.kill()
+                        break
+                    continue
                 chunk = os.read(proc.stdout.fileno(), 65536)
                 if not chunk:
                     break
+                last_data = now
                 buf.extend(chunk)
                 while True:
                     a = buf.find(bytes([0xff, 0xd8]))
                     if a < 0:
-                        if len(buf) > 4194304: buf.clear()
+                        if len(buf) > 4194304:
+                            buf.clear()
                         break
                     b = buf.find(bytes([0xff, 0xd9]), a + 2)
                     if b < 0:
-                        if a: del buf[:a]
+                        if a:
+                            del buf[:a]
                         break
                     frame = bytes(buf[a:b + 2])
                     del buf[:b + 2]
@@ -224,14 +239,16 @@ def latest_frame_engine(index):
                     if first:
                         first = False
                         diag(f"[camera {index + 1}] Latest-frame engine received first frame")
-            err = proc.stderr.read().decode(errors="ignore")[-800:] if proc.stderr else ""
-            safe = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
-            diag(f"[camera {index + 1}] Latest-frame engine disconnected: {safe or 'stream ended'}")
+            diag(f"[camera {index + 1}] Latest-frame engine reconnecting")
         except Exception as e:
             diag(f"[camera {index + 1}] Latest-frame engine error: {type(e).__name__}: {e}")
         finally:
             if proc and proc.poll() is None:
                 proc.kill()
+                try:
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
         time.sleep(backoff)
         backoff = min(backoff * 2, 8)
 
@@ -246,11 +263,11 @@ def start_latest_engines():
 def ptz(c, direction):
     step = int(c.get("ptz_step", 20))
     invert = bool(c.get("invert_y", False))
-    if direction == "left": return mipc(c, "ptz", "--x", -step)
-    if direction == "right": return mipc(c, "ptz", "--x", step)
-    if direction == "up": return mipc(c, "ptz", "--y", step if invert else -step)
-    if direction == "down": return mipc(c, "ptz", "--y", -step if invert else step)
-    if direction == "home": return mipc(c, "ptz", "--home")
+    if direction == "left": return mipc(c, "ptz", "--x", -step, timeout=5)
+    if direction == "right": return mipc(c, "ptz", "--x", step, timeout=5)
+    if direction == "up": return mipc(c, "ptz", "--y", step if invert else -step, timeout=5)
+    if direction == "down": return mipc(c, "ptz", "--y", -step if invert else step, timeout=5)
+    if direction == "home": return mipc(c, "ptz", "--home", timeout=5)
     raise ValueError("Unknown PTZ direction")
 
 def mjpeg(index):
@@ -373,7 +390,7 @@ def home():
     <script>
     async function loadDiag(){try{const r=await fetch('api/diagnostics?t='+Date.now());document.getElementById('diag').textContent=await r.text()}catch(e){document.getElementById('diag').textContent=e.toString()}}
     function copyDiag(){const t=document.getElementById('diag').textContent;const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a)}
-    setInterval(loadDiag,3000);loadDiag();
+    setInterval(loadDiag,5000);loadDiag();
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
@@ -383,7 +400,7 @@ def home():
       if(liveTimers[i]) clearInterval(liveTimers[i]);
       const tick=()=>{ v.src='camera/'+i+'/frame.jpg?t='+Date.now(); };
       tick();
-      liveTimers[i]=setInterval(tick,100);
+      liveTimers[i]=setInterval(tick,250);
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
     window.addEventListener('load',()=>{document.querySelectorAll('img[id^="cam-"]').forEach(el=>startLive(parseInt(el.id.split('-')[1])))})
@@ -529,6 +546,9 @@ def snapshot(index):
 def move(index,direction):
     try:
         c = camera(index)
+        lock = ptz_locks.setdefault(index, threading.Lock())
+        if not lock.acquire(blocking=False):
+            return jsonify(ok=False,busy=True,error="PTZ busy - command not queued"),429
         started = time.perf_counter()
         def worker():
             try:
@@ -537,6 +557,8 @@ def move(index,direction):
                 diag(f"[camera {index + 1}] PTZ {direction} completed in {ms} ms")
             except Exception as e:
                 diag(f"[camera {index + 1}] PTZ {direction} error: {type(e).__name__}: {e}")
+            finally:
+                lock.release()
         threading.Thread(target=worker, daemon=True).start()
         return jsonify(ok=True)
     except Exception as e:
