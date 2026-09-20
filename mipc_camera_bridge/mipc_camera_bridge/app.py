@@ -255,13 +255,17 @@ def live(index):
 
 @app.get("/camera/<int:index>/snapshot")
 def snapshot(index):
-    url=fresh_stream(index, force=True)
-    p=subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-i",url,
-                      "-frames:v","1","-f","image2pipe","-vcodec","mjpeg","pipe:1"],
-                     capture_output=True, timeout=30)
-    if p.returncode or not p.stdout:
-        return jsonify(ok=False,error=(p.stderr.decode(errors="ignore") or "Snapshot failed")),500
-    return Response(p.stdout,mimetype="image/jpeg",headers={"Cache-Control":"no-store"})
+    camera(index)
+    try:
+        name = ensure_go2rtc(index)
+        r = requests.get("http://127.0.0.1:1984/api/frame.jpeg",
+                         params={"src": name}, timeout=15)
+        if r.ok and r.content:
+            return Response(r.content, mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
+        raise RuntimeError(f"go2rtc snapshot failed: HTTP {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        diag(f"[camera {index + 1}] Snapshot error: {type(e).__name__}: {e}")
+        return jsonify(ok=False,error=str(e)),500
 
 @app.post("/api/camera/<int:index>/ptz/<direction>")
 def move(index,direction):
