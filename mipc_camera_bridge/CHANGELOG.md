@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.20
+- Added our own purpose-built latest-frame low-latency camera engine
+- Keeps one MIPC RTMP connection per camera and discards stale decoded frames instead of building a playback backlog
+- Browser viewer reads only the newest available frame
+- Snapshot now reuses the active frame cache instead of opening a competing camera session
+- Disabled VLC/go2rtc camera monitors while the new engine owns the live session
+
 ## 1.0.19
 - Changed VLC output to raw MJPEG/JPEG data
 - Added bridge-side JPEG frame parsing and clean browser multipart boundaries
