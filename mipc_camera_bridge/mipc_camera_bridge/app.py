@@ -225,7 +225,7 @@ def latest_frame_engine(index):
                 ["ffmpeg", "-hide_banner", "-loglevel", "error",
                  "-fflags", "nobuffer", "-flags", "low_delay",
                  "-probesize", "32768", "-analyzeduration", "0",
-                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "4",
+                 "-i", url, "-an", "-vf", "fps=10", "-q:v", "4",
                  "-f", "mjpeg", "pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
             )
