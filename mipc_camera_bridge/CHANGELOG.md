@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.21
+- Kept the working purpose-built latest-frame camera engine unchanged
+- Replaced long-lived MJPEG browser transport with ingress-safe finite JPEG frame delivery
+- Frontend requests the newest cached frame every 100 ms, so stale video is never queued for playback
+- Added no-cache frame responses for immediate refresh through Home Assistant Ingress
+
 ## 1.0.20
 - Added our own purpose-built latest-frame low-latency camera engine
 - Keeps one MIPC RTMP connection per camera and discards stale decoded frames instead of building a playback backlog
