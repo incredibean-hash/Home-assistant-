@@ -168,7 +168,7 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><img src="camera/{i}/live" alt="{name} live video"></div>
+          <div class="video"><img id="cam-{i}" src="camera/{i}/snapshot?live=1&t=0" alt="{name} live video"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
@@ -197,7 +197,9 @@ def home():
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
-    function reloadVideo(i){const img=document.querySelector('img[src^="camera/'+i+'/live"]');img.src='camera/'+i+'/live?t='+Date.now();setTimeout(loadDiag,500)}
+    function refreshStill(i){const img=document.getElementById('cam-'+i);if(img&&!img.dataset.loading){img.dataset.loading='1';const next=new Image();next.onload=()=>{img.src=next.src;delete img.dataset.loading};next.onerror=()=>{delete img.dataset.loading};next.src='camera/'+i+'/snapshot?live=1&t='+Date.now()}}
+    function reloadVideo(i){refreshStill(i);setTimeout(loadDiag,500)}
+    setInterval(()=>{document.querySelectorAll('img[id^="cam-"]').forEach(img=>refreshStill(parseInt(img.id.slice(4))))},1500);
     </script></body></html>"""
 
 @app.get("/camera/<int:index>/live")
