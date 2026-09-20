@@ -18,6 +18,8 @@ diag_lines = []
 go2rtc_lock = threading.Lock()
 go2rtc_ready = {}
 monitor_started = False
+vlc_procs = {}
+vlc_lock = threading.Lock()
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -110,6 +112,47 @@ def start_monitor():
         return
     monitor_started = True
     threading.Thread(target=camera_monitor, daemon=True).start()
+
+def ensure_vlc(index, force=False):
+    # VLC owns the MIPC RTMP input. It emits a deliberately low-buffer MJPEG
+    # stream on localhost; Flask only proxies it into Home Assistant ingress.
+    port = 9100 + index
+    with vlc_lock:
+        old = vlc_procs.get(index)
+        if old and old.poll() is None and not force:
+            return port
+        if old and old.poll() is None:
+            old.terminate()
+            try: old.wait(timeout=2)
+            except Exception: old.kill()
+        url = fresh_stream(index, force=True)
+        diag(f"[camera {index + 1}] VLC requesting fresh MIPC RTMP session")
+        cmd = [
+            "cvlc", "-I", "dummy", "--no-audio", "--network-caching=100",
+            "--live-caching=100", "--drop-late-frames", "--skip-frames",
+            url,
+            "--sout", f"#transcode{{vcodec=MJPG,vb=0,scale=1}}:standard{{access=http,mux=mpjpeg,dst=127.0.0.1:{port}/live.mjpg}}",
+            "--sout-keep"
+        ]
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        vlc_procs[index] = p
+        diag(f"[camera {index + 1}] VLC low-latency engine started on local port {port}")
+        return port
+
+def vlc_monitor():
+    time.sleep(2)
+    while True:
+        for index, _ in enumerate(cameras()):
+            try:
+                p = vlc_procs.get(index)
+                if not p or p.poll() is not None:
+                    ensure_vlc(index, force=True)
+            except Exception as e:
+                diag(f"[camera {index + 1}] VLC background reconnect failed: {type(e).__name__}: {e}")
+        time.sleep(3)
+
+def start_vlc_monitor():
+    threading.Thread(target=vlc_monitor, daemon=True).start()
 
 def ptz(c, direction):
     step = int(c.get("ptz_step", 20))
@@ -216,17 +259,17 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><video id="cam-{i}" autoplay muted playsinline controls src="camera/{i}/go2rtc.mp4"></video><img id="fallback-{i}" alt="{name} camera" style="display:none"></div>
+          <div class="video"><img id="cam-{i}" src="camera/{i}/vlc.mjpg" alt="{name} live camera"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
             <span></span><button onclick="move({i},'down')">▼</button><span></span>
           </div>
           <div class="row">
-            <button onclick="reloadVideo({i})">Refresh video</button>
+            <button onclick="reloadVideo({i})">Refresh VLC</button>
             <a class="button" href="camera/{i}/snapshot" target="_blank">Snapshot</a>
           </div>
-          <div id="status-{i}" class="status">Local camera</div>
+          <div id="status-{i}" class="status">VLC low-latency live view</div>
         </section>""")
     return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>MIPC Cameras</title><style>
@@ -246,13 +289,43 @@ def home():
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
     function startLive(i){
-      const v=document.getElementById('cam-'+i), f=document.getElementById('fallback-'+i);
-      f.style.display='none';v.style.display='block';
-      v.src='camera/'+i+'/go2rtc.mp4?t='+Date.now();v.load();
-      const p=v.play();if(p&&p.catch)p.catch(()=>{});
+      const v=document.getElementById('cam-'+i);
+      v.src='camera/'+i+'/vlc.mjpg?t='+Date.now();
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
     </script></body></html>"""
+
+@app.get("/camera/<int:index>/vlc.mjpg")
+def vlc_live(index):
+    camera(index)
+    try:
+        port = ensure_vlc(index)
+        upstream = None
+        last_error = None
+        for _ in range(20):
+            try:
+                upstream = requests.get(f"http://127.0.0.1:{port}/live.mjpg",
+                                        stream=True, timeout=(1, None))
+                if upstream.ok:
+                    break
+                last_error = RuntimeError(f"VLC HTTP {upstream.status_code}")
+            except Exception as e:
+                last_error = e
+            time.sleep(0.15)
+        if not upstream or not upstream.ok:
+            raise RuntimeError(f"VLC output not ready: {last_error}")
+        diag(f"[camera {index + 1}] Browser attached to VLC live stream")
+        def chunks():
+            try:
+                for chunk in upstream.iter_content(chunk_size=32768):
+                    if chunk: yield chunk
+            finally:
+                upstream.close()
+        return Response(chunks(), mimetype="multipart/x-mixed-replace; boundary=--7b3cc56e5f51db803f790dad720ed50a",
+                        headers={"Cache-Control":"no-store, no-cache, must-revalidate","X-Accel-Buffering":"no"})
+    except Exception as e:
+        diag(f"[camera {index + 1}] VLC live error: {type(e).__name__}: {e}")
+        return jsonify(ok=False,error=str(e)),500
 
 @app.get("/camera/<int:index>/go2rtc.mp4")
 def go2rtc_mp4(index):
@@ -315,4 +388,5 @@ def health():
 
 if __name__=="__main__":
     start_monitor()
+    start_vlc_monitor()
     app.run(host="0.0.0.0",port=8099,threaded=True)
