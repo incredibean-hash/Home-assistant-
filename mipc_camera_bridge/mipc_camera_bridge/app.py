@@ -74,72 +74,91 @@ def ptz(c, direction):
     raise ValueError("Unknown PTZ direction")
 
 def mjpeg(index):
-    # Ask MIPC for a fresh URL when playback starts. ffmpeg decodes the camera's
-    # local RTMP/H.264 stream and emits browser-compatible multipart JPEG frames.
-    # No cloud service is used.
+    # Run FFmpeg in a worker so a stalled RTMP handshake can never block diagnostics.
     for attempt in range(2):
         proc = None
+        stderr_chunks = []
         try:
             diag(f"[camera {index + 1}] Live video attempt {attempt + 1} starting")
             url = fresh_stream(index, force=(attempt > 0))
-            diag(f"[camera {index + 1}] Testing TCP connection to {camera(index).get('host')}:7010")
-            try:
-                with socket.create_connection((str(camera(index).get("host")), 7010), timeout=5):
-                    diag(f"[camera {index + 1}] TCP port 7010 reachable from Home Assistant")
-            except Exception as tcp_error:
-                diag(f"[camera {index + 1}] TCP port 7010 FAILED from Home Assistant: {type(tcp_error).__name__}: {tcp_error}")
-                raise
-            diag(f"[camera {index + 1}] Starting FFmpeg decoder with RTMP debug")
+            host = str(camera(index).get("host"))
+            diag(f"[camera {index + 1}] Testing TCP connection to {host}:7010")
+            with socket.create_connection((host, 7010), timeout=5):
+                diag(f"[camera {index + 1}] TCP port 7010 reachable from Home Assistant")
+            diag(f"[camera {index + 1}] Starting FFmpeg decoder with 15-second watchdog")
             proc = subprocess.Popen(
                 ["ffmpeg","-hide_banner","-loglevel","verbose",
                  "-rw_timeout","10000000","-i",url,"-an","-vf","fps=5",
                  "-q:v","5","-f","mjpeg","pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
+
+            def drain_stderr():
+                try:
+                    while True:
+                        line = proc.stderr.readline()
+                        if not line:
+                            break
+                        stderr_chunks.append(line.decode(errors="ignore"))
+                        if len(stderr_chunks) > 80:
+                            del stderr_chunks[:-80]
+                except Exception:
+                    pass
+            threading.Thread(target=drain_stderr, daemon=True).start()
+
             buf = bytearray()
-            first_deadline = time.time() + 15
+            got_frame = False
+            deadline = time.time() + 15
             while True:
-                wait = max(0, first_deadline - time.time()) if not buf else 15
-                ready, _, _ = select.select([proc.stdout], [], [], wait)
-                if not ready:
-                    diag(f"[camera {index + 1}] FFmpeg timed out waiting for video data")
-                    proc.terminate()
+                if not got_frame and time.time() >= deadline:
+                    diag(f"[camera {index + 1}] FFmpeg timed out: no video frame within 15 seconds")
+                    proc.kill()
                     try: proc.wait(timeout=2)
-                    except Exception: proc.kill()
-                    err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
+                    except Exception: pass
+                    time.sleep(0.2)
+                    err = "".join(stderr_chunks).strip()
                     safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
-                    diag(f"[camera {index + 1}] FFmpeg timeout detail: {safe_err[-2500:] or 'no error text'}")
+                    diag(f"[camera {index + 1}] FFmpeg timeout detail: {safe_err[-2500:] or 'no FFmpeg error text'}")
                     break
+                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+                if not ready:
+                    if proc.poll() is not None:
+                        break
+                    continue
                 chunk = os.read(proc.stdout.fileno(), 16384)
-                if not chunk: break
+                if not chunk:
+                    break
                 buf.extend(chunk)
                 while True:
-                    start = buf.find(b"\xff\xd8")
-                    if start < 0:
+                    frame_start = buf.find(b"\\xff\\xd8")
+                    if frame_start < 0:
                         if len(buf) > 1048576: buf.clear()
                         break
-                    end = buf.find(b"\xff\xd9", start+2)
-                    if end < 0:
-                        if start: del buf[:start]
+                    frame_end = buf.find(b"\\xff\\xd9", frame_start + 2)
+                    if frame_end < 0:
+                        if frame_start: del buf[:frame_start]
                         break
-                    frame = bytes(buf[start:end+2])
-                    del buf[:end+2]
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-            rc = proc.wait(timeout=3)
-            if rc == 0:
+                    frame = bytes(buf[frame_start:frame_end + 2])
+                    del buf[:frame_end + 2]
+                    if not got_frame:
+                        got_frame = True
+                        diag(f"[camera {index + 1}] First video frame received")
+                    yield b"--frame\\r\\nContent-Type: image/jpeg\\r\\nContent-Length: " + str(len(frame)).encode() + b"\\r\\n\\r\\n" + frame + b"\\r\\n"
+            if got_frame:
                 return
-            err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
-            safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
-            diag(f"[camera {index + 1}] FFmpeg exited {rc}: {safe_err[-2500:] or 'no error text'}")
+            if proc and proc.poll() is not None:
+                err = "".join(stderr_chunks).strip()
+                safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+                diag(f"[camera {index + 1}] FFmpeg exited {proc.returncode}: {safe_err[-2500:] or 'no error text'}")
         except GeneratorExit:
             return
         except Exception as e:
             diag(f"[camera {index + 1}] Live stream error on attempt {attempt + 1}: {type(e).__name__}: {e}")
         finally:
             if proc and proc.poll() is None:
-                proc.terminate()
+                proc.kill()
                 try: proc.wait(timeout=2)
-                except Exception: proc.kill()
+                except Exception: pass
 
 @app.get("/")
 def home():
