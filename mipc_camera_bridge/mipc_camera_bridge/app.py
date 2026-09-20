@@ -20,6 +20,10 @@ go2rtc_ready = {}
 monitor_started = False
 vlc_procs = {}
 vlc_lock = threading.Lock()
+latest_lock = threading.Lock()
+latest_frames = {}
+latest_seq = {}
+engine_threads = {}
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -177,6 +181,66 @@ def vlc_monitor():
 def start_vlc_monitor():
     threading.Thread(target=vlc_monitor, daemon=True).start()
 
+def latest_frame_engine(index):
+    """One camera connection, newest frame wins: stale decoded frames are discarded."""
+    backoff = 1
+    while True:
+        proc = None
+        try:
+            url = fresh_stream(index, force=True)
+            diag(f"[camera {index + 1}] Latest-frame engine opening one MIPC RTMP session")
+            proc = subprocess.Popen(
+                ["ffmpeg", "-hide_banner", "-loglevel", "warning",
+                 "-fflags", "nobuffer", "-flags", "low_delay",
+                 "-probesize", "32768", "-analyzeduration", "0",
+                 "-i", url, "-an", "-vf", "fps=30", "-q:v", "4",
+                 "-f", "mjpeg", "pipe:1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+            )
+            buf = bytearray()
+            first = True
+            backoff = 1
+            while proc.poll() is None:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while True:
+                    a = buf.find(bytes([0xff, 0xd8]))
+                    if a < 0:
+                        if len(buf) > 4194304: buf.clear()
+                        break
+                    b = buf.find(bytes([0xff, 0xd9]), a + 2)
+                    if b < 0:
+                        if a: del buf[:a]
+                        break
+                    frame = bytes(buf[a:b + 2])
+                    del buf[:b + 2]
+                    with latest_lock:
+                        latest_frames[index] = frame
+                        latest_seq[index] = latest_seq.get(index, 0) + 1
+                    if first:
+                        first = False
+                        diag(f"[camera {index + 1}] Latest-frame engine received first frame")
+            err = proc.stderr.read().decode(errors="ignore")[-800:] if proc.stderr else ""
+            safe = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+            diag(f"[camera {index + 1}] Latest-frame engine disconnected: {safe or 'stream ended'}")
+        except Exception as e:
+            diag(f"[camera {index + 1}] Latest-frame engine error: {type(e).__name__}: {e}")
+        finally:
+            if proc and proc.poll() is None:
+                proc.kill()
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 8)
+
+def start_latest_engines():
+    for index, _ in enumerate(cameras()):
+        t = engine_threads.get(index)
+        if not t or not t.is_alive():
+            t = threading.Thread(target=latest_frame_engine, args=(index,), daemon=True)
+            engine_threads[index] = t
+            t.start()
+
 def ptz(c, direction):
     step = int(c.get("ptz_step", 20))
     invert = bool(c.get("invert_y", False))
@@ -282,17 +346,17 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><img id="cam-{i}" src="camera/{i}/vlc.mjpg" alt="{name} live camera"></div>
+          <div class="video"><img id="cam-{i}" src="camera/{i}/latest.mjpg" alt="{name} live camera"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
             <span></span><button onclick="move({i},'down')">▼</button><span></span>
           </div>
           <div class="row">
-            <button onclick="reloadVideo({i})">Refresh VLC</button>
+            <button onclick="reloadVideo({i})">Refresh Live</button>
             <a class="button" href="camera/{i}/snapshot" target="_blank">Snapshot</a>
           </div>
-          <div id="status-{i}" class="status">VLC low-latency live view</div>
+          <div id="status-{i}" class="status">Low-latency latest-frame live view</div>
         </section>""")
     return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>MIPC Cameras</title><style>
@@ -313,10 +377,33 @@ def home():
       catch(e){s.textContent=e.toString()}}
     function startLive(i){
       const v=document.getElementById('cam-'+i);
-      v.src='camera/'+i+'/vlc.mjpg?t='+Date.now();
+      v.src='camera/'+i+'/latest.mjpg?t='+Date.now();
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
     </script></body></html>"""
+
+@app.get("/camera/<int:index>/latest.mjpg")
+def latest_live(index):
+    camera(index)
+    start_latest_engines()
+    diag(f"[camera {index + 1}] Browser attached to latest-frame engine")
+    def frames():
+        seen = -1
+        first = True
+        while True:
+            with latest_lock:
+                seq = latest_seq.get(index, 0)
+                frame = latest_frames.get(index)
+            if frame is not None and seq != seen:
+                seen = seq
+                if first:
+                    first = False
+                    diag(f"[camera {index + 1}] First latest frame delivered to browser")
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-cache\r\n\r\n" + frame + b"\r\n"
+            else:
+                time.sleep(0.01)
+    return Response(frames(), content_type="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Cache-Control":"no-store, no-cache, must-revalidate","X-Accel-Buffering":"no"})
 
 @app.get("/camera/<int:index>/vlc.mjpg")
 def vlc_live(index):
@@ -401,16 +488,15 @@ def live(index):
 @app.get("/camera/<int:index>/snapshot")
 def snapshot(index):
     camera(index)
-    try:
-        name = ensure_go2rtc(index)
-        r = requests.get("http://127.0.0.1:1984/api/frame.jpeg",
-                         params={"src": name}, timeout=15)
-        if r.ok and r.content:
-            return Response(r.content, mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
-        raise RuntimeError(f"go2rtc snapshot failed: HTTP {r.status_code} {r.text[:200]}")
-    except Exception as e:
-        diag(f"[camera {index + 1}] Snapshot error: {type(e).__name__}: {e}")
-        return jsonify(ok=False,error=str(e)),500
+    start_latest_engines()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        with latest_lock:
+            frame = latest_frames.get(index)
+        if frame:
+            return Response(frame, mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
+        time.sleep(0.05)
+    return jsonify(ok=False,error="No live frame available yet"),503
 
 @app.post("/api/camera/<int:index>/ptz/<direction>")
 def move(index,direction):
@@ -429,6 +515,6 @@ def health():
     return jsonify(ok=True,cameras=len(cameras()))
 
 if __name__=="__main__":
-    start_monitor()
-    start_vlc_monitor()
+    diag("MIPC latest-frame engine active; VLC/go2rtc camera monitors disabled")
+    start_latest_engines()
     app.run(host="0.0.0.0",port=8099,threaded=True)
