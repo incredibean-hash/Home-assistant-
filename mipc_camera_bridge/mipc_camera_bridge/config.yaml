@@ -1,5 +1,5 @@
 name: "MIPC Camera Bridge"
-version: "1.0.13"
+version: "1.0.14"
 slug: "mipc_camera_bridge"
 description: "Local go2rtc live video, snapshots and PTZ for compatible MIPC cameras"
 url: "https://github.com/incredibean-hash/Home-assistant-"
