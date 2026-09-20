@@ -168,7 +168,7 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><canvas id="cam-{i}" aria-label="{name} live video"></canvas><img id="fallback-{i}" src="camera/{i}/snapshot?live=1&t=0" alt="{name} camera" style="display:none"></div>
+          <div class="video"><canvas id="cam-{i}" aria-label="{name} live video"></canvas><img id="fallback-{i}" alt="{name} camera" style="display:none"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
