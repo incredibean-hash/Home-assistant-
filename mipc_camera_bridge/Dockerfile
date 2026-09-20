@@ -1,0 +1,17 @@
+FROM ghcr.io/home-assistant/base:latest
+
+ARG BUILD_VERSION
+ARG BUILD_ARCH
+LABEL io.hass.version="${BUILD_VERSION}" \
+      io.hass.type="app" \
+      io.hass.arch="${BUILD_ARCH}"
+
+RUN apk add --no-cache python3 py3-pip ffmpeg \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir flask mipc-camera-client
+
+COPY app.py /app/app.py
+COPY run.sh /run.sh
+RUN chmod a+x /run.sh
+
+CMD ["/run.sh"]
