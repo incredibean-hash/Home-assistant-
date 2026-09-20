@@ -15,7 +15,8 @@ RUN apk add --no-cache python3 py3-pip ffmpeg vlc wget \
          *) echo "Unsupported architecture: $BUILD_ARCH" && exit 1 ;; \
        esac \
     && wget -q -O /usr/local/bin/go2rtc "https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_${GO2RTC_ARCH}" \
-    && chmod +x /usr/local/bin/go2rtc
+    && chmod +x /usr/local/bin/go2rtc \
+    && adduser -D -H -s /sbin/nologin vlcuser
 
 COPY app.py /app/app.py
 COPY run.sh /run.sh
