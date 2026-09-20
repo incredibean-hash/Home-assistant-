@@ -88,7 +88,7 @@ def mjpeg(index):
             diag(f"[camera {index + 1}] Starting FFmpeg decoder with 15-second watchdog")
             proc = subprocess.Popen(
                 ["ffmpeg","-hide_banner","-loglevel","verbose",
-                 "-rw_timeout","10000000","-i",url,"-an","-vf","fps=5",
+                 "-rw_timeout","10000000","-i",url,"-an","-vf","fps=30",
                  "-q:v","5","-f","mjpeg","pipe:1"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
@@ -168,7 +168,7 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><img id="cam-{i}" src="camera/{i}/snapshot?live=1&t=0" alt="{name} live video"></div>
+          <div class="video"><canvas id="cam-{i}" aria-label="{name} live video"></canvas><img id="fallback-{i}" src="camera/{i}/snapshot?live=1&t=0" alt="{name} camera" style="display:none"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
@@ -185,7 +185,7 @@ def home():
     :root{color-scheme:dark}body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:14px;background:#111827;color:#f9fafb}
     h1{font-size:22px;margin:4px 0 14px}.card{max-width:760px;margin:0 auto 16px;background:#1f2937;border-radius:18px;padding:14px}
     h2{margin:0 0 10px}.video{background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center}
-    .video img{width:100%;height:100%;object-fit:contain}.ptz{display:grid;grid-template-columns:68px 68px 68px;gap:8px;justify-content:center;margin:14px 0}
+    .video img,.video canvas{width:100%;height:100%;object-fit:contain}.ptz{display:grid;grid-template-columns:68px 68px 68px;gap:8px;justify-content:center;margin:14px 0}
     button,.button{border:0;border-radius:12px;min-height:48px;padding:10px 14px;background:#374151;color:#fff;font-size:16px;text-decoration:none;display:flex;align-items:center;justify-content:center}
     .ptz button{font-size:22px}.home{font-size:18px!important}.row{display:flex;gap:8px;flex-wrap:wrap}.status{color:#9ca3af;font-size:13px;margin-top:10px}
     </style></head><body><h1>MIPC Camera Bridge</h1>"""+"".join(cards)+r"""
@@ -197,9 +197,39 @@ def home():
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
-    function refreshStill(i){const img=document.getElementById('cam-'+i);if(img&&!img.dataset.loading){img.dataset.loading='1';const next=new Image();next.onload=()=>{img.src=next.src;delete img.dataset.loading};next.onerror=()=>{delete img.dataset.loading};next.src='camera/'+i+'/snapshot?live=1&t='+Date.now()}}
-    function reloadVideo(i){refreshStill(i);setTimeout(loadDiag,500)}
-    setInterval(()=>{document.querySelectorAll('img[id^="cam-"]').forEach(img=>refreshStill(parseInt(img.id.slice(4))))},1500);
+    const liveControllers={};
+    async function startLive(i){
+      if(liveControllers[i]) liveControllers[i].abort();
+      const ctl=new AbortController(); liveControllers[i]=ctl;
+      const canvas=document.getElementById('cam-'+i), ctx=canvas.getContext('2d');
+      const fallback=document.getElementById('fallback-'+i);
+      try{
+        const r=await fetch('camera/'+i+'/live?t='+Date.now(),{cache:'no-store',signal:ctl.signal});
+        if(!r.ok||!r.body) throw new Error('live stream unavailable');
+        const reader=r.body.getReader(); let buf=new Uint8Array(0), shown=false;
+        while(true){
+          const x=await reader.read(); if(x.done) throw new Error('live stream ended');
+          const merged=new Uint8Array(buf.length+x.value.length); merged.set(buf); merged.set(x.value,buf.length); buf=merged;
+          while(true){
+            let a=-1,b=-1;
+            for(let n=0;n<buf.length-1;n++){if(buf[n]===255&&buf[n+1]===216){a=n;break}}
+            if(a<0){if(buf.length>1048576)buf=buf.slice(-2);break}
+            for(let n=a+2;n<buf.length-1;n++){if(buf[n]===255&&buf[n+1]===217){b=n+2;break}}
+            if(b<0){if(a>0)buf=buf.slice(a);break}
+            const blob=new Blob([buf.slice(a,b)],{type:'image/jpeg'}); buf=buf.slice(b);
+            const bmp=await createImageBitmap(blob); canvas.width=bmp.width; canvas.height=bmp.height;
+            ctx.drawImage(bmp,0,0); bmp.close(); shown=true; fallback.style.display='none'; canvas.style.display='block';
+          }
+        }
+      }catch(e){
+        if(ctl.signal.aborted)return;
+        canvas.style.display='none'; fallback.style.display='block';
+        fallback.src='camera/'+i+'/snapshot?t='+Date.now();
+        setTimeout(()=>startLive(i),3000);
+      }
+    }
+    function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
+    document.querySelectorAll('canvas[id^="cam-"]').forEach(c=>startLive(parseInt(c.id.slice(4))));
     </script></body></html>"""
 
 @app.get("/camera/<int:index>/live")
