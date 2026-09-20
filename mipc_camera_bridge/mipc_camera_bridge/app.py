@@ -26,6 +26,10 @@ latest_seq = {}
 latest_frame_time = {}
 engine_threads = {}
 ptz_locks = {}
+auto_pan_lock = threading.Lock()
+auto_pan_stop = {}
+auto_pan_threads = {}
+auto_pan_direction = {}
 
 def diag(message):
     line = time.strftime("%H:%M:%S") + "  " + str(message)
@@ -270,6 +274,62 @@ def ptz(c, direction):
     if direction == "home": return mipc(c, "ptz", "--home", timeout=5)
     raise ValueError("Unknown PTZ direction")
 
+def auto_pan_worker(index, stop_event):
+    """Slow, bounded patrol using the same one-command-at-a-time PTZ gate."""
+    direction = auto_pan_direction.get(index, "right")
+    steps_this_way = 0
+    max_steps = 24
+    diag(f"[camera {index + 1}] Auto Pan started")
+    try:
+        while not stop_event.is_set():
+            c = camera(index)
+            lock = ptz_locks.setdefault(index, threading.Lock())
+            if lock.acquire(blocking=False):
+                try:
+                    ptz(c, direction)
+                    steps_this_way += 1
+                except Exception as e:
+                    diag(f"[camera {index + 1}] Auto Pan {direction} error: {type(e).__name__}: {e}")
+                    if stop_event.wait(0.75):
+                        break
+                finally:
+                    lock.release()
+            if steps_this_way >= max_steps:
+                direction = "left" if direction == "right" else "right"
+                auto_pan_direction[index] = direction
+                steps_this_way = 0
+                if stop_event.wait(0.6):
+                    break
+            elif stop_event.wait(0.30):
+                break
+    finally:
+        diag(f"[camera {index + 1}] Auto Pan stopped")
+        with auto_pan_lock:
+            if auto_pan_stop.get(index) is stop_event:
+                auto_pan_stop.pop(index, None)
+                auto_pan_threads.pop(index, None)
+
+def start_auto_pan(index):
+    camera(index)
+    with auto_pan_lock:
+        t = auto_pan_threads.get(index)
+        if t and t.is_alive():
+            return False
+        stop_event = threading.Event()
+        auto_pan_stop[index] = stop_event
+        t = threading.Thread(target=auto_pan_worker, args=(index, stop_event), daemon=True)
+        auto_pan_threads[index] = t
+        t.start()
+        return True
+
+def stop_auto_pan(index):
+    with auto_pan_lock:
+        event = auto_pan_stop.get(index)
+        if event:
+            event.set()
+            return True
+    return False
+
 def mjpeg(index):
     # Run FFmpeg in a worker so a stalled RTMP handshake can never block diagnostics.
     for attempt in range(2):
@@ -371,8 +431,7 @@ def home():
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
             <span></span><button onclick="move({i},'down')">▼</button><span></span>
           </div>
-          <div class="row">
-            <button onclick="reloadVideo({i})">Refresh Live</button>
+          <div class="row">\n            <button id="pan-{i}" onclick="toggleAutoPan({i})">Start Auto Pan</button>\n            <button onclick="reloadVideo({i})">Refresh Live</button>
             <a class="button" href="camera/{i}/snapshot" target="_blank">Snapshot</a>
           </div>
           <div id="status-{i}" class="status">Low-latency latest-frame live view</div>
@@ -394,7 +453,7 @@ def home():
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
-    const liveTimers={};
+    async function toggleAutoPan(i){const b=document.getElementById('pan-'+i),s=document.getElementById('status-'+i);const running=b.dataset.running==='1';\n      try{const r=await fetch('api/camera/'+i+'/autopan/'+(running?'stop':'start'),{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error||'Auto Pan failed');b.dataset.running=running?'0':'1';b.textContent=running?'Start Auto Pan':'Stop Auto Pan';s.textContent=running?'Auto Pan stopped':'Auto Pan running slowly';}\n      catch(e){s.textContent=e.toString()}}\n    const liveTimers={};
     function startLive(i){
       const v=document.getElementById('cam-'+i);
       if(liveTimers[i]) clearInterval(liveTimers[i]);
@@ -541,6 +600,20 @@ def snapshot(index):
             return Response(frame, mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
         time.sleep(0.05)
     return jsonify(ok=False,error="No live frame available yet"),503
+
+@app.post("/api/camera/<int:index>/autopan/<action>")
+def auto_pan_api(index, action):
+    try:
+        camera(index)
+        if action == "start":
+            start_auto_pan(index)
+            return jsonify(ok=True,running=True)
+        if action == "stop":
+            stop_auto_pan(index)
+            return jsonify(ok=True,running=False)
+        return jsonify(ok=False,error="Unknown Auto Pan action"),400
+    except Exception as e:
+        return jsonify(ok=False,error=str(e)),500
 
 @app.post("/api/camera/<int:index>/ptz/<direction>")
 def move(index,direction):
