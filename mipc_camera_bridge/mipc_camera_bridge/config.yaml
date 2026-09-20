@@ -1,5 +1,5 @@
 name: "MIPC Camera Bridge"
-version: "1.0.18"
+version: "1.0.19"
 slug: "mipc_camera_bridge"
 description: "Low-latency VLC live video with local MIPC PTZ and go2rtc fallback"
 url: "https://github.com/incredibean-hash/Home-assistant-"
