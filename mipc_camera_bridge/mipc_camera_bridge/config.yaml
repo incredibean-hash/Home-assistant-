@@ -1,5 +1,5 @@
 name: "MIPC Camera Bridge"
-version: "1.0.5"
+version: "1.0.6"
 slug: "mipc_camera_bridge"
 description: "Local live video, snapshots and PTZ for compatible MIPC cameras"
 url: "https://github.com/incredibean-hash/Home-assistant-"
