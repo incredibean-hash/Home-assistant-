@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.24
+- Safety/stability build after the 1.0.23 host-network lockup
+- Limits each camera to one PTZ command at a time and drops extra commands instead of queueing them
+- Adds a 5-second hard timeout to PTZ commands
+- Reduces Home Assistant Ingress frame polling from 10 to 4 requests per second
+- Reduces diagnostics polling frequency
+- Prevents FFmpeg stderr pipe blockage and automatically restarts only a stale camera decoder
+- Preserves the single-session latest-frame architecture
+
 ## 1.0.23
 - Diagnostic build based on the known-good 1.0.21 frame rate and JPEG quality
 - Added per-frame timestamps and X-MIPC-Frame-Age-Ms response data to distinguish decoder stalls from browser stalls
