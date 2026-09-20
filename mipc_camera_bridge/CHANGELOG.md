@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.19
+- Changed VLC output to raw MJPEG/JPEG data
+- Added bridge-side JPEG frame parsing and clean browser multipart boundaries
+- Added diagnostic confirmation when the first VLC frame reaches the browser
+
 ## 1.0.18
 - Run VLC as a dedicated unprivileged user inside the Home Assistant App container
 - Fix VLC refusing to start because Home Assistant Apps run as root by default
