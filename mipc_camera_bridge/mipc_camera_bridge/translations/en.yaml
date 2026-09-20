@@ -1,0 +1,17 @@
+configuration:
+  cameras:
+    name: Cameras
+    description: Compatible MIPC cameras to control locally.
+    fields:
+      name:
+        name: Camera name
+      host:
+        name: IP address or hostname
+      user:
+        name: Device ID / username
+      password:
+        name: Camera password
+      ptz_step:
+        name: PTZ step size
+      invert_y:
+        name: Invert Up/Down
