@@ -6,7 +6,7 @@ LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
       io.hass.arch="${BUILD_ARCH}"
 
-RUN apk add --no-cache python3 py3-pip ffmpeg wget \
+RUN apk add --no-cache python3 py3-pip ffmpeg vlc wget \
     && python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir flask requests mipc-camera-client \
     && case "$BUILD_ARCH" in \
