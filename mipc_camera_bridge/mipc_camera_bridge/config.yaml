@@ -1,7 +1,7 @@
 name: "MIPC Camera Bridge"
-version: "1.0.11"
+version: "1.0.12"
 slug: "mipc_camera_bridge"
-description: "Local live video, snapshots and PTZ for compatible MIPC cameras"
+description: "Local go2rtc live video, snapshots and PTZ for compatible MIPC cameras"
 url: "https://github.com/incredibean-hash/Home-assistant-"
 startup: application
 boot: auto
