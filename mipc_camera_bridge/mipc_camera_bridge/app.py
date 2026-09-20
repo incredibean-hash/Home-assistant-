@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import socket
+import select
 import time
 from flask import Flask, Response, jsonify
 
@@ -96,8 +97,20 @@ def mjpeg(index):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
             )
             buf = bytearray()
+            first_deadline = time.time() + 15
             while True:
-                chunk = proc.stdout.read(16384)
+                wait = max(0, first_deadline - time.time()) if not buf else 15
+                ready, _, _ = select.select([proc.stdout], [], [], wait)
+                if not ready:
+                    diag(f"[camera {index + 1}] FFmpeg timed out waiting for video data")
+                    proc.terminate()
+                    try: proc.wait(timeout=2)
+                    except Exception: proc.kill()
+                    err = proc.stderr.read().decode(errors="ignore").strip() if proc.stderr else ""
+                    safe_err = re.sub(r"rtmp://[^\\s]+", "rtmp://[redacted]", err)
+                    diag(f"[camera {index + 1}] FFmpeg timeout detail: {safe_err[-2500:] or 'no error text'}")
+                    break
+                chunk = os.read(proc.stdout.fileno(), 16384)
                 if not chunk: break
                 buf.extend(chunk)
                 while True:
@@ -160,12 +173,12 @@ def home():
     <section class="card"><h2>Diagnostics</h2><p class="status">Updates automatically when the bridge tests the camera. Passwords and stream tokens are not shown.</p><pre id="diag" style="white-space:pre-wrap;word-break:break-word;background:#111827;padding:12px;border-radius:12px;max-height:300px;overflow:auto">Loading...</pre><div class="row"><button onclick="copyDiag()">Copy Diagnostics</button><button onclick="loadDiag()">Refresh Diagnostics</button></div></section>
     <script>
     async function loadDiag(){try{const r=await fetch('api/diagnostics?t='+Date.now());document.getElementById('diag').textContent=await r.text()}catch(e){document.getElementById('diag').textContent=e.toString()}}
-    async function copyDiag(){await loadDiag();try{await navigator.clipboard.writeText(document.getElementById('diag').textContent)}catch(e){}}
+    function copyDiag(){const t=document.getElementById('diag').textContent;const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a)}
     setInterval(loadDiag,3000);loadDiag();
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
-    function reloadVideo(i){const img=document.querySelector('img[src^="camera/'+i+'/live"]');img.src='camera/'+i+'/live?t='+Date.now()}
+    function reloadVideo(i){const img=document.querySelector('img[src^="camera/'+i+'/live"]');img.src='camera/'+i+'/live?t='+Date.now();setTimeout(loadDiag,500)}
     </script></body></html>"""
 
 @app.get("/camera/<int:index>/live")
