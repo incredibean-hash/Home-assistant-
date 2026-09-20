@@ -143,7 +143,7 @@ def mjpeg(index):
                     if not got_frame:
                         got_frame = True
                         diag(f"[camera {index + 1}] First video frame received")
-                    yield b"--frame" + bytes([13,10]) + b"Content-Type: image/jpeg" + bytes([13,10]) + b"Content-Length: " + str(len(frame)).encode() + bytes([13,10,13,10]) + frame + bytes([13,10])
+                    yield b"--frame" + bytes([13,10]) + b"Content-Type: image/jpeg" + bytes([13,10,13,10]) + frame + bytes([13,10])
             if got_frame:
                 return
             if proc and proc.poll() is not None:
