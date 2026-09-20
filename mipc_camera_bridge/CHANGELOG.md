@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.18
+- Run VLC as a dedicated unprivileged user inside the Home Assistant App container
+- Fix VLC refusing to start because Home Assistant Apps run as root by default
+
 ## 1.0.17
 - Disabled the competing go2rtc background camera session while testing VLC live playback
 - Added VLC exit-code and stderr diagnostics so playback failures show the real cause
