@@ -346,7 +346,7 @@ def home():
         cards.append(f"""
         <section class="card">
           <h2>{name}</h2>
-          <div class="video"><img id="cam-{i}" src="camera/{i}/latest.mjpg" alt="{name} live camera"></div>
+          <div class="video"><img id="cam-{i}" src="camera/{i}/frame.jpg?t=0" alt="{name} live camera"></div>
           <div class="ptz">
             <span></span><button onclick="move({i},'up')">▲</button><span></span>
             <button onclick="move({i},'left')">◀</button><button class="home" onclick="move({i},'home')">●</button><button onclick="move({i},'right')">▶</button>
@@ -375,12 +375,34 @@ def home():
     async function move(i,d){const s=document.getElementById('status-'+i);s.textContent='Moving…';
       try{const r=await fetch('api/camera/'+i+'/ptz/'+d,{method:'POST'});const j=await r.json();s.textContent=j.ok?'Ready':j.error}
       catch(e){s.textContent=e.toString()}}
+    const liveTimers={};
     function startLive(i){
       const v=document.getElementById('cam-'+i);
-      v.src='camera/'+i+'/latest.mjpg?t='+Date.now();
+      if(liveTimers[i]) clearInterval(liveTimers[i]);
+      const tick=()=>{ v.src='camera/'+i+'/frame.jpg?t='+Date.now(); };
+      tick();
+      liveTimers[i]=setInterval(tick,100);
     }
     function reloadVideo(i){startLive(i);setTimeout(loadDiag,500)}
+    window.addEventListener('load',()=>{document.querySelectorAll('img[id^="cam-"]').forEach(el=>startLive(parseInt(el.id.split('-')[1])))})
     </script></body></html>"""
+
+@app.get("/camera/<int:index>/frame.jpg")
+def latest_frame_jpeg(index):
+    camera(index)
+    start_latest_engines()
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        with latest_lock:
+            frame = latest_frames.get(index)
+            seq = latest_seq.get(index, 0)
+        if frame:
+            return Response(frame, content_type="image/jpeg",
+                            headers={"Cache-Control":"no-store, no-cache, must-revalidate, max-age=0",
+                                     "Pragma":"no-cache",
+                                     "X-MIPC-Frame":str(seq)})
+        time.sleep(0.02)
+    return Response(status=503)
 
 @app.get("/camera/<int:index>/latest.mjpg")
 def latest_live(index):
