@@ -1,0 +1,32 @@
+name: "MIPC Camera Bridge"
+version: "1.0.2"
+slug: "mipc_camera_bridge"
+description: "Local live video, snapshots and PTZ for compatible MIPC cameras"
+url: "https://github.com/incredibean-hash/Home-assistant-"
+startup: application
+boot: auto
+init: false
+arch:
+  - amd64
+  - aarch64
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:cctv
+panel_title: MIPC Cameras
+options:
+  cameras:
+    - name: "Camera 1"
+      host: "192.168.86.66"
+      user: "1jfiegbqvbzna"
+      password: ""
+      ptz_step: 20
+      invert_y: false
+schema:
+  cameras:
+    - name: str
+      host: str
+      user: str
+      password: password
+      ptz_step: "int(1,100)"
+      invert_y: bool
